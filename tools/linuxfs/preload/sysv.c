@@ -456,7 +456,41 @@ int msgget(key_t key, int msgflg) {
     return id;
 }
 
+/* gamescope sends mangoapp one message per frame the focused app commits (mangoapp_msg_v1: version,
+ * pid, app_frametime_ns; ~0 when the message is about output timing instead). Counting those here
+ * gives the app's own frame rate to the session's FPS counter, which otherwise only sees gamescope's
+ * output: one buffer per refresh while an overlay or a Steam menu makes it composite. Counted at
+ * send time so mangoapp still receives every message; read as <dir>/game-frames (u64 count). */
+static void count_game_frame(const void *msgp, size_t msgsz) {
+    static _Atomic(uint64_t *) counter;
+    const unsigned char *p = (const unsigned char *)((const long *)msgp + 1);
+    uint32_t version;
+    uint64_t app_frametime;
+    if (*(const long *)msgp != 1 || msgsz < 16) return;
+    memcpy(&version, p, sizeof(version));
+    memcpy(&app_frametime, p + 8, sizeof(app_frametime));
+    if (version != 1 || app_frametime == UINT64_MAX) return;
+    uint64_t *c = atomic_load(&counter);
+    if (!c) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/game-frames", object_dir());
+        int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+        if (fd < 0) return;
+        if (ftruncate(fd, sizeof(uint64_t)) == 0) {
+            void *m = mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            uint64_t *expected = NULL;
+            if (m != MAP_FAILED && !atomic_compare_exchange_strong(&counter, &expected, (uint64_t *)m))
+                munmap(m, sizeof(uint64_t));
+        }
+        close(fd);
+        c = atomic_load(&counter);
+        if (!c) return;
+    }
+    __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
+}
+
 int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
+    count_game_frame(msgp, msgsz);
     struct msg_queue *q = msg_map(msqid);
     if (!q) return -1;
     if (msgsz > sizeof(q->slot[0].data) || *(const long *)msgp < 1) { munmap(q, sizeof(*q)); errno = EINVAL; return -1; }

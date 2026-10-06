@@ -13,6 +13,7 @@ import com.droiddeck.launcher.gpu.FrameGen
 import com.droiddeck.launcher.gpu.Lossless
 import com.droiddeck.launcher.wayland.WaylandCompositor
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -21,9 +22,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * is on, what the screen is actually being shown - "60 → 118 fps" is the proof that the engine
  * is doing something, and "FG starting" or a reason is the proof that it is not.
  *
- * The base rate is the game window's own frames, counted here from the compositor's per-frame
- * callback with or without an engine - what Steam's overlay counts too. The presented rate comes
- * from the engine's telemetry while it generates.
+ * The base rate is the game's own frames. gamescope tells mangoapp about each one, and the session's
+ * System V shim counts those messages into a file (see sysv.c); that is what Steam's overlay counts
+ * too. Without it (no gamescope, or mangoapp off) the base rate falls back to the frames gamescope's
+ * window commits here, which is the same thing until gamescope composites - an overlay or a Steam
+ * menu makes it send one buffer per refresh, and the count jumps to the panel's rate. The presented
+ * rate comes from the engine's telemetry while it generates.
  */
 class PerfHud(context: Context) {
     /** Empty when the HUD is off or not yet started. */
@@ -35,6 +39,8 @@ class PerfHud(context: Context) {
     private var lastTick = 0L
     private var running = false
     private val handler = Handler(Looper.getMainLooper())
+    private val gameFrames = File(context.cacheDir, "shm/wnsysv/game-frames")
+    private var lastGameFrames = -1L
 
     /** The session's own switch (drawer), with the Downloads file as a device-side override. */
     private val enabled: Boolean
@@ -63,7 +69,11 @@ class PerfHud(context: Context) {
             val now = SystemClock.elapsedRealtime()
             val dt = (now - lastTick).coerceAtLeast(1L) / 1000f
             lastTick = now
-            text = line(frames.getAndSet(0) / dt)
+            val committed = frames.getAndSet(0)
+            val counted = readGameFrames()
+            val delta = if (counted >= 0 && lastGameFrames >= 0) counted - lastGameFrames else -1L
+            lastGameFrames = counted
+            text = line((if (delta > 0) delta.toInt() else committed) / dt)
             handler.postDelayed(this, 1000)
         }
     }
@@ -78,6 +88,7 @@ class PerfHud(context: Context) {
         running = true
         lastTick = SystemClock.elapsedRealtime()
         frames.set(0)
+        lastGameFrames = readGameFrames()
         WaylandCompositor.setGameListener(listener)
         handler.post(tick)
     }
@@ -86,6 +97,15 @@ class PerfHud(context: Context) {
         running = false
         WaylandCompositor.clearGameListener(listener)
         text = ""
+    }
+
+    /** The game-frame count sysv.c keeps (a little-endian u64), or -1 when there is none yet. */
+    private fun readGameFrames(): Long = try {
+        RandomAccessFile(gameFrames, "r").use { f ->
+            if (f.length() < 8) -1L else java.lang.Long.reverseBytes(f.readLong())
+        }
+    } catch (e: Exception) {
+        -1L
     }
 
     private fun line(base: Float): String {
