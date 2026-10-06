@@ -292,6 +292,7 @@ static struct wl_event_source *g_render_idle, *g_frame_timer;
 static int g_dirty;                         /* something changed since the last render */
 static int64_t g_last_vsync_ns;             /* last tick, 0 = none yet */
 static int64_t g_refresh_ns = 16666667;     /* measured tick interval (pacing only, never reported) */
+static int64_t g_vsync_frame_ns;            /* the last Choreographer tick's frame time (CLOCK_MONOTONIC) */
 static struct wl_event_source *g_fallback_timer;
 static int g_fallback_armed;
 
@@ -2190,7 +2191,17 @@ static void render_scene(void) {
     free(hs.is_hdr);
     if (hdr_copy && rendered && droiddeck_color_hdr_open()) hdr_count_copied(&dl, hdr_copy);
     if (rendered) {
-        int64_t t = now_ns();
+        /* The time a frame is reported shown is the refresh it goes out on: the Choreographer tick
+         * that drew it plus one interval, not when the copy happened to finish. gamescope runs its
+         * vblank clock off these times, and its frame limiter counts vblanks on that clock; times
+         * taken at the end of a copy drift by however long each copy took, and a game capped at 30
+         * ran at 32-36. Without a recent tick it falls back to now. */
+        int64_t now = now_ns();
+        int64_t t = now;
+        if (g_vsync_frame_ns > 0 && now - g_vsync_frame_ns < 50000000LL) {
+            t = g_vsync_frame_ns + g_refresh_ns;
+            if (t < now) t = now;
+        }
         g_stat_frames++;
         /* A surface outside the scene (role-less, not placed yet, a hidden helper window such
          * as wined3d's device window) was not shown, so its feedback is discarded rather than
@@ -2255,7 +2266,7 @@ static void on_vsync(int64_t frame_time_ns) {
         if (d > 3000000LL && d < 40000000LL) g_refresh_ns = (g_refresh_ns * 7 + d) / 8;
     }
     g_last_vsync_ns = now;
-    (void)frame_time_ns;
+    g_vsync_frame_ns = frame_time_ns;
     /* The app's surface may have been replaced or taken away since the last frame: apply that now
      * (the app never waits for us), and redraw the scene onto a new one. */
     if (vkp_apply_window_request()) g_dirty = 1;

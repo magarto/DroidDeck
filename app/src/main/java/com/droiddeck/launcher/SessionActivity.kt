@@ -269,19 +269,6 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (!CompositorHost.isStarted) return
         val display = (if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay) ?: return
         if (display.displayId != displayId) return
-        // Only a rate that holds is passed on. An adaptive panel also dips for a moment (a Samsung
-        // drops to 60 Hz while the picture is still, or for a capped game) and each change makes
-        // gamescope re-derive its frame pacing - "Changed refresh to: 60 / 120 hz" back and forth,
-        // letting a game capped at 30 run at 32-34. A drop that stays (battery saver, heat) still
-        // reaches gamescope, a moment later.
-        refreshHandler.removeCallbacks(applyPanelRefresh)
-        refreshHandler.postDelayed(applyPanelRefresh, PANEL_REFRESH_SETTLE_MS)
-    }
-
-    private val refreshHandler = Handler(Looper.getMainLooper())
-    private val applyPanelRefresh = Runnable {
-        if (!CompositorHost.isStarted) return@Runnable
-        val display = (if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay) ?: return@Runnable
         val hz = display.refreshRate
         if (hz > 1f) WaylandCompositor.nativeSetOutputRefreshRate(hz)
     }
@@ -2020,7 +2007,6 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
-        refreshHandler.removeCallbacks(applyPanelRefresh)
         if (runtimeRemovalBlocked) { super.onDestroy(); return }
         // Deliberately does NOT end the session: this activity can be destroyed while the user is
         // in another app, and the whole point of the service is that Steam survives that.
@@ -2091,8 +2077,6 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     companion object {
-        /** How long a new panel rate must hold before gamescope is told (see followPanelRefresh). */
-        private const val PANEL_REFRESH_SETTLE_MS = 2000L
         const val EXTRA_RETURN_HOME = "returnHome"
         /** How long the leaving flood may take before the session closes without it. */
         private const val LEAVE_TIMEOUT_MS = 1_500L
