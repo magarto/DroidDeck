@@ -41,6 +41,8 @@ class PerfHud(context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val gameFrames = File(context.cacheDir, "shm/wnsysv/game-frames")
     private var lastGameFrames = longArrayOf(-1L, -1L)
+    /** The game-frame count has moved this session: from then on it is the rate, 0 included. */
+    private var gameFramesLive = false
 
     /** The session's own switch (drawer), with the Downloads file as a device-side override. */
     private val enabled: Boolean
@@ -77,7 +79,9 @@ class PerfHud(context: Context) {
                 if (counted[i] >= 0 && lastGameFrames[i] >= 0) counted[i] - lastGameFrames[i] else -1L
             }
             lastGameFrames = counted
-            text = line((if (delta > 0) delta.toInt() else committed) / dt)
+            if (delta > 0) gameFramesLive = true
+            // A game drawing nothing (a loading screen) is 0, not gamescope's composited frames.
+            text = line((if (gameFramesLive) delta.coerceAtLeast(0L).toInt() else committed) / dt)
             handler.postDelayed(this, 1000)
         }
     }
@@ -93,6 +97,7 @@ class PerfHud(context: Context) {
         lastTick = SystemClock.elapsedRealtime()
         frames.set(0)
         lastGameFrames = readGameFrames()
+        gameFramesLive = false
         WaylandCompositor.setGameListener(listener)
         handler.post(tick)
     }
