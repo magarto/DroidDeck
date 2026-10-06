@@ -40,7 +40,7 @@ class PerfHud(context: Context) {
     private var running = false
     private val handler = Handler(Looper.getMainLooper())
     private val gameFrames = File(context.cacheDir, "shm/wnsysv/game-frames")
-    private var lastGameFrames = -1L
+    private var lastGameFrames = longArrayOf(-1L, -1L)
 
     /** The session's own switch (drawer), with the Downloads file as a device-side override. */
     private val enabled: Boolean
@@ -71,7 +71,11 @@ class PerfHud(context: Context) {
             lastTick = now
             val committed = frames.getAndSet(0)
             val counted = readGameFrames()
-            val delta = if (counted >= 0 && lastGameFrames >= 0) counted - lastGameFrames else -1L
+            // The legacy stream or the connector's own, whichever gamescope is sending (both carry
+            // the same frames when both are on, so the larger one is the game's rate).
+            val delta = (0..1).maxOf { i ->
+                if (counted[i] >= 0 && lastGameFrames[i] >= 0) counted[i] - lastGameFrames[i] else -1L
+            }
             lastGameFrames = counted
             text = line((if (delta > 0) delta.toInt() else committed) / dt)
             handler.postDelayed(this, 1000)
@@ -99,13 +103,14 @@ class PerfHud(context: Context) {
         text = ""
     }
 
-    /** The game-frame count sysv.c keeps (a little-endian u64), or -1 when there is none yet. */
-    private fun readGameFrames(): Long = try {
+    /** The game-frame counts sysv.c keeps (two little-endian u64), -1 where there is none yet. */
+    private fun readGameFrames(): LongArray = try {
         RandomAccessFile(gameFrames, "r").use { f ->
-            if (f.length() < 8) -1L else java.lang.Long.reverseBytes(f.readLong())
+            if (f.length() < 16) longArrayOf(-1L, -1L)
+            else LongArray(2) { java.lang.Long.reverseBytes(f.readLong()) }
         }
     } catch (e: Exception) {
-        -1L
+        longArrayOf(-1L, -1L)
     }
 
     private fun line(base: Float): String {
