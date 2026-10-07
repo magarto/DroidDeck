@@ -250,7 +250,22 @@ static void remember(const char *dir, unsigned h) {
   pthread_mutex_unlock(&cache_lock);
 }
 
-/* The host directory `dir` is reached by the kernel without crossing a symlink. */
+/*
+ * `dir` is in the rootfs and the kernel reached `out` from it through symlinks that stay in the
+ * rootfs and outside every binding - what Wine's dosdevices/c: -> ../drive_c is. proot follows a
+ * relative symlink there to the same directory, so the two agree. An absolute target lands outside
+ * the rootfs on the host and a binding's mount point leads somewhere else in the guest: both fail.
+ */
+static int same_in_rootfs(const char *dir, const char *out) {
+  if (!under(dir, root, rootlen) || !under(out, root, rootlen)) return 0;
+  const char *g = out[rootlen] ? out + rootlen : "/";
+  for (int i = 0; i < nbinds; i++)
+    if (under(g, binds[i].guest, binds[i].glen) || under(binds[i].guest, g, strlen(g))) return 0;
+  return 1;
+}
+
+/* The host directory `dir` is reached by the kernel without crossing a symlink, or only through
+ * symlinks proot resolves to the same directory (same_in_rootfs). */
 static long canonical_dir(const char *dir) {
   unsigned h = hash_of(dir);
   if (cached(dir, h)) return 1;
@@ -262,7 +277,7 @@ static long canonical_dir(const char *dir) {
   sc(SYS_close, fd, 0, 0, 0, 0);
   if (n <= 0) return 0;
   out[n] = 0;
-  if (strcmp(out, dir) != 0) return 0;
+  if (strcmp(out, dir) != 0 && !same_in_rootfs(dir, out)) return 0;
   remember(dir, h);
   return 1;
 }
